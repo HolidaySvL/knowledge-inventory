@@ -1,4 +1,4 @@
-# AI Knowledge Inventory — Scope-aware Pre-correction Version
+# AI Knowledge Inventory — v11 Guided Pre-correction
 
 This is a single-file Streamlit deploy version.
 
@@ -19,48 +19,42 @@ Then deploy on Streamlit Cloud with:
 Main file path = app.py
 ```
 
-## What is new in v10
+## What is new in v11
 
-This version adds **Scope-aware Pre-correction**.
+v11 improves the pre-correction experience:
 
-After the initial document scan, users can refine results at different levels:
+- Pre-correction is now placed as a large CTA directly below the diagnosis dashboard.
+- Users review the dashboard first, then click **Start Guided Pre-correction**.
+- Questions now work like a guided coworker interaction:
+  - each question has selectable answer options;
+  - the recommended option is clearly marked;
+  - a reason is provided for the recommendation;
+  - users can still write a custom clarification;
+  - users control whether the answer applies to the batch, a segment, selected documents, or one document only.
 
-```text
-Batch-level correction
-Segment-level correction
-Selected-documents correction
-Document-level correction
-```
-
-The app generates targeted clarification questions, lets the user choose the correction scope, applies the correction, updates the dashboard, and generates a correction ledger.
-
-## Core idea
-
-The system should not ask users to review every document one by one.
-
-Instead, it clusters uncertainty across a document batch and asks a small number of high-impact questions.
-
-Each answer can correct one document, a selected group, or all matching documents.
-
-## Supported upload methods
-
-- Upload folder ZIP
-- Upload individual files
-
-## Supported formats
+## Correction scopes
 
 ```text
-.docx, .doc
-.xlsx, .xls, .xlsm
-.pptx, .ppt
-.pdf
-.txt, .md, .csv
-.png, .jpg, .jpeg, .webp, .tif, .tiff
-.zip
+Batch-level
+Segment-level
+Selected-documents
+Document-level
 ```
 
-## Notes
+## Output
 
-- `.doc` and `.ppt` conversion requires LibreOffice.
-- OCR requires Tesseract.
-- If OCR or conversion fails, the app will show extraction warnings instead of crashing.
+After correction, the app regenerates:
+
+```text
+knowledge_inventory_corrected.xlsx
+process_map_corrected.md
+document_risk_report_corrected.md
+correction_ledger.xlsx
+knowledge_inventory_corrected_bundle.zip
+```
+
+## Core product principle
+
+Minimum human input, maximum knowledge correction.
+
+The system should not ask users to review every document one by one. It should cluster uncertainty, recommend safe choices, leave a custom answer path, and keep every correction traceable.

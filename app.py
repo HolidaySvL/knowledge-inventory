@@ -833,6 +833,93 @@ def issue_label(issue_type: str) -> str:
     }
     return labels.get(issue_type, issue_type)
 
+def build_answer_options(issue_type: str, scope_type: str, docs: pd.DataFrame) -> tuple[list[dict], str, str]:
+    """Return Claude-like answer options plus a recommended choice."""
+    count = len(docs["document_name"].dropna().unique().tolist()) if docs is not None and not docs.empty else 0
+
+    if issue_type == "version_unclear":
+        if scope_type == "Document-level":
+            options = [
+                {"label": "Treat this document as the current valid version", "effect": "lower_risk", "description": "Use when the business owner confirms this is the active approved file."},
+                {"label": "Keep this document as Needs Review until version is confirmed", "effect": "keep_review", "description": "Safest choice when the version or approval status is still unclear."},
+                {"label": "Treat this document as supporting material only", "effect": "supporting_only", "description": "Use when the file is useful context but should not become source of truth."},
+                {"label": "Other / custom answer", "effect": "custom", "description": "Write your own correction rule."},
+            ]
+        else:
+            options = [
+                {"label": "Keep documents without clear version as Needs Review", "effect": "keep_review", "description": f"Safest batch rule for {count} affected document(s)."},
+                {"label": "Treat the affected documents as current valid versions", "effect": "lower_risk", "description": "Use only if the upload batch is already confirmed as the current approved set."},
+                {"label": "Treat the affected documents as supporting material only", "effect": "supporting_only", "description": "Useful when these files provide context but should not drive final AI answers."},
+                {"label": "Other / custom answer", "effect": "custom", "description": "Write your own correction rule."},
+            ]
+        recommended = "Keep documents without clear version as Needs Review" if scope_type != "Document-level" else "Keep this document as Needs Review until version is confirmed"
+        reason = "Recommended because version validity directly affects source-of-truth quality."
+
+    elif issue_type == "owner_unclear":
+        dept_candidates = [x for x in docs.get("department", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip() and str(x).strip().lower() != "unknown"] if docs is not None and not docs.empty else []
+        default_owner = dept_candidates[0] if len(dept_candidates) == 1 else "the selected business owner"
+        options = [
+            {"label": f"Assign {default_owner} as the owner for this scope", "effect": "lower_risk", "description": "Use when the selected scope clearly belongs to one responsible team."},
+            {"label": "Keep owner as Needs Review", "effect": "keep_review", "description": "Use when ownership still needs confirmation."},
+            {"label": "Apply owner only to selected documents, not future matches", "effect": "lower_risk", "description": "Use when the answer is valid only for this correction round."},
+            {"label": "Other / custom answer", "effect": "custom", "description": "Write the exact owner or ownership rule."},
+        ]
+        recommended = f"Assign {default_owner} as the owner for this scope" if default_owner != "the selected business owner" else "Keep owner as Needs Review"
+        reason = "Recommended based on whether this scope has a clear shared department."
+
+    elif issue_type == "source_of_truth_unclear":
+        options = [
+            {"label": "Treat these documents as supporting material, not source of truth", "effect": "supporting_only", "description": "Best for meeting notes, presentations, drafts, and informal records."},
+            {"label": "Treat these documents as source of truth", "effect": "lower_risk", "description": "Use only if these files are approved authoritative references."},
+            {"label": "Keep as Needs Review until source-of-truth status is approved", "effect": "keep_review", "description": "Safe option when approval status is unclear."},
+            {"label": "Other / custom answer", "effect": "custom", "description": "Write your own source-of-truth rule."},
+        ]
+        recommended = "Treat these documents as supporting material, not source of truth"
+        reason = "Recommended because non-SOP documents often need approval before entering a knowledge base."
+
+    elif issue_type == "rule_unclear":
+        options = [
+            {"label": "Keep unclear rules as Needs Review until the business rule is confirmed", "effect": "keep_review", "description": "Safest when the rule affects process guidance or AI answers."},
+            {"label": "Apply one shared business rule to this scope", "effect": "lower_risk", "description": "Use when you can provide the confirmed rule in the custom field."},
+            {"label": "Mark as not KB-ready because the rule is too ambiguous", "effect": "not_kb_ready", "description": "Use when ambiguity is high and cannot be resolved in this round."},
+            {"label": "Other / custom answer", "effect": "custom", "description": "Write the exact clarified rule."},
+        ]
+        recommended = "Keep unclear rules as Needs Review until the business rule is confirmed"
+        reason = "Recommended because unclear business rules can create wrong operational answers."
+
+    elif issue_type == "extraction_incomplete":
+        options = [
+            {"label": "Keep as Needs Review due to extraction quality", "effect": "keep_review", "description": "Safest when OCR or conversion may have missed content."},
+            {"label": "Use extracted text for preliminary analysis only", "effect": "supporting_only", "description": "Allows rough inventory while blocking final knowledge ingestion."},
+            {"label": "Exclude from KB until the file is re-uploaded or OCR is fixed", "effect": "not_kb_ready", "description": "Use when extraction quality is not acceptable."},
+            {"label": "Other / custom answer", "effect": "custom", "description": "Write your own handling rule."},
+        ]
+        recommended = "Keep as Needs Review due to extraction quality"
+        reason = "Recommended because incomplete extraction can hide important clauses or steps."
+
+    elif issue_type == "conflict_detected":
+        options = [
+            {"label": "Keep as Needs Review until the conflict is resolved", "effect": "keep_review", "description": "Safest when multiple documents may disagree."},
+            {"label": "Use the most recent approved document as source of truth", "effect": "lower_risk", "description": "Use only when approval and version information are reliable."},
+            {"label": "Ask the process owner to confirm the current standard", "effect": "keep_review", "description": "Use when ownership is known but the rule is not."},
+            {"label": "Other / custom answer", "effect": "custom", "description": "Write the specific rule or source to use."},
+        ]
+        recommended = "Keep as Needs Review until the conflict is resolved"
+        reason = "Recommended because conflicts should not be published as trusted knowledge."
+
+    else:
+        options = [
+            {"label": "Keep these high-risk items as Needs Review", "effect": "keep_review", "description": "Safe default for uncertain or incomplete documents."},
+            {"label": "Treat them as low-confidence supporting material", "effect": "supporting_only", "description": "Use when content is useful but should not drive final answers."},
+            {"label": "Apply a shared correction rule to this scope", "effect": "lower_risk", "description": "Use when you can provide the correction rule in the custom field."},
+            {"label": "Other / custom answer", "effect": "custom", "description": "Write your own correction rule."},
+        ]
+        recommended = "Keep these high-risk items as Needs Review"
+        reason = "Recommended because high-risk documents require a conservative default."
+
+    return options, recommended, reason
+
+
 def build_question(issue_type, docs, scope_type, context_label):
     affected = docs["document_name"].dropna().unique().tolist()
     count = len(affected)
@@ -905,10 +992,15 @@ def build_question(issue_type, docs, scope_type, context_label):
         assump = "High-risk documents should remain Needs Review unless clarified."
         why = "High-risk items may affect downstream AI answer reliability."
 
+    options, recommended, recommended_reason = build_answer_options(issue_type, scope_type, docs)
+
     base.update({
         "why_it_matters": why,
         "ai_assumption": assump,
         "question_to_user": q,
+        "answer_options": options,
+        "recommended_option": recommended,
+        "recommended_reason": recommended_reason,
     })
     return base
 
@@ -971,6 +1063,42 @@ def generate_scope_questions(df: pd.DataFrame, scope_type: str, scope_df: pd.Dat
 
     return pd.DataFrame(questions)
 
+def infer_answer_effect(answer: str) -> str:
+    lower = (answer or "").lower()
+    if not lower.strip():
+        return "skip"
+    if "other / custom" in lower and "user clarification:" not in lower:
+        return "skip"
+    if "not kb-ready" in lower or "exclude from kb" in lower or "too ambiguous" in lower:
+        return "not_kb_ready"
+    if "supporting material" in lower or "preliminary analysis only" in lower or "not source of truth" in lower:
+        return "supporting_only"
+    if "needs review" in lower or "until" in lower or "ask the process owner" in lower:
+        return "keep_review"
+    if is_actionable_answer(answer):
+        return "lower_risk"
+    return "keep_review"
+
+
+def calculate_corrected_status(before_risk: str, before_kb: str, answer: str) -> tuple[str, str, bool]:
+    effect = infer_answer_effect(answer)
+    if effect == "skip":
+        return before_risk, before_kb, True
+    if effect == "keep_review":
+        return before_risk, "Needs Review", True
+    if effect == "supporting_only":
+        after_risk = lower_risk_one_level(before_risk)
+        return after_risk, "Needs Review", True
+    if effect == "not_kb_ready":
+        return "High", "No", True
+    if effect == "lower_risk":
+        after_risk = lower_risk_one_level(before_risk)
+        after_kb = "Yes" if after_risk == "Low" else "Needs Review"
+        after_review = False if after_risk == "Low" else True
+        return after_risk, after_kb, after_review
+    return before_risk, "Needs Review", True
+
+
 def apply_precorrections(
     inventory_df: pd.DataFrame,
     questions_df: pd.DataFrame,
@@ -1032,13 +1160,7 @@ def apply_precorrections(
             before_risk = corrected.loc[mask, "corrected_risk_level"].iloc[0]
             before_kb = corrected.loc[mask, "corrected_can_enter_kb"].iloc[0]
 
-            if is_actionable_answer(answer):
-                after_risk = lower_risk_one_level(before_risk)
-            else:
-                after_risk = before_risk
-
-            after_kb = "Yes" if after_risk == "Low" else "Needs Review"
-            after_review = False if after_risk == "Low" else True
+            after_risk, after_kb, after_review = calculate_corrected_status(before_risk, before_kb, answer)
 
             note = f"[{qid} | {issue_label(issue_type)} | {apply_scope}] {answer}"
             existing = str(corrected.loc[mask, "correction_notes"].iloc[0] or "")
@@ -1119,15 +1241,16 @@ def report_zip_bytes_with_ledger(df: pd.DataFrame, process_map: str, risk_report
     return buffer.getvalue()
 
 def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, Any]):
-    st.subheader("Scope-aware Pre-correction")
-    st.caption("Select the correction scope, generate targeted clarification questions, answer only what matters, and apply corrections at a controlled scope.")
+    st.subheader("Guided Pre-correction")
+    st.caption("Choose the scope, answer a small number of targeted questions, and decide exactly how broadly each answer should be applied.")
 
+    st.markdown('<div class="guided-card">', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         scope_choice = st.selectbox(
             "Correction scope",
             ["Batch-level", "Segment-level", "Selected-documents", "Document-level"],
-            help="Choose how broad or precise this correction round should be."
+            help="Batch-level fixes shared issues. Segment-level focuses on a filtered group. Document-level fixes one file only."
         )
 
     scope_df = base_df.copy()
@@ -1179,7 +1302,8 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
     issue_df = build_issue_registry(scope_df)
     metric_cols[3].metric("Detected issues", len(issue_df))
 
-    if st.button("Generate Clarification Questions", type="secondary", use_container_width=True):
+    gen_label = "Generate guided questions for this scope"
+    if st.button(gen_label, type="primary", use_container_width=True):
         if scope_df.empty:
             st.warning("No documents in current scope.")
         else:
@@ -1187,12 +1311,13 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
             st.session_state.correction_questions = qdf
             st.session_state.correction_scope_docs = scope_df["document_name"].dropna().tolist()
             st.session_state.correction_scope_type = scope_choice
+    st.markdown('</div>', unsafe_allow_html=True)
 
     qdf = st.session_state.get("correction_questions")
 
     if qdf is not None and not qdf.empty:
         st.markdown("### Clarification Questions")
-        st.caption(f"{len(qdf)} grouped question(s) generated. Each answer can correct one or multiple documents depending on the apply scope you choose.")
+        st.caption(f"{len(qdf)} grouped question(s) generated. Pick an option, review the recommended choice, or write your own clarification.")
 
         answers = {}
         apply_scopes = {}
@@ -1204,6 +1329,11 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
                 st.markdown(f"**Why it matters**  \n{q['why_it_matters']}")
                 st.markdown(f"**AI assumption**  \n{q['ai_assumption']}")
 
+                recommended = q.get("recommended_option", "")
+                recommended_reason = q.get("recommended_reason", "")
+                if recommended:
+                    st.success(f"Recommended option: {recommended}\n\nReason: {recommended_reason}")
+
                 docs = q.get("affected_documents", [])
                 if isinstance(docs, str):
                     try:
@@ -1213,47 +1343,89 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
                 if docs:
                     st.caption("Affected documents: " + ", ".join(docs[:8]) + (" ..." if len(docs) > 8 else ""))
 
-                answers[qid] = st.text_area(
-                    "Your clarification",
-                    key=f"answer_{qid}",
-                    placeholder="Example: Treat Procurement Operations as the default owner for this process.",
-                    height=80
+                raw_options = q.get("answer_options", [])
+                if not isinstance(raw_options, list) or not raw_options:
+                    raw_options = [{"label": "Keep as Needs Review", "description": "Safe default."}, {"label": "Other / custom answer", "description": "Write your own correction rule."}]
+
+                labels = [opt.get("label", str(opt)) if isinstance(opt, dict) else str(opt) for opt in raw_options]
+                recommended_idx = labels.index(recommended) if recommended in labels else 0
+                display_labels = [f"⭐ Recommended — {x}" if x == recommended else x for x in labels]
+
+                selected_display = st.radio(
+                    "Choose one answer",
+                    display_labels,
+                    index=recommended_idx,
+                    key=f"option_{qid}",
+                    help="You can accept the recommended option or choose another option."
                 )
+                selected_label = selected_display.replace("⭐ Recommended — ", "", 1)
+
+                selected_desc = ""
+                for opt in raw_options:
+                    if isinstance(opt, dict) and opt.get("label") == selected_label:
+                        selected_desc = opt.get("description", "")
+                        break
+                if selected_desc:
+                    st.caption(f"Option meaning: {selected_desc}")
+
+                custom_note = st.text_area(
+                    "Optional custom clarification / override",
+                    key=f"custom_{qid}",
+                    placeholder="Example: Owner should be Procurement Operations only for Supplier Onboarding documents created after 2025.",
+                    height=85,
+                )
+
+                if selected_label == "Other / custom answer" and not custom_note.strip():
+                    answers[qid] = ""
+                else:
+                    answers[qid] = selected_label if not custom_note.strip() else f"{selected_label}. User clarification: {custom_note.strip()}"
 
                 scope_options = ["Affected documents in this question", "Current selected scope", "Entire batch matching this issue"]
                 if q["affected_document_count"] >= 1:
                     scope_options.append("This document only")
 
+                default_scope_idx = 0
+                if q.get("scope_type") == "Document-level" and "This document only" in scope_options:
+                    default_scope_idx = scope_options.index("This document only")
+                elif q.get("scope_type") == "Batch-level":
+                    default_scope_idx = scope_options.index("Affected documents in this question")
+
                 apply_scopes[qid] = st.selectbox(
                     "Apply this answer to",
                     scope_options,
+                    index=default_scope_idx,
                     key=f"apply_scope_{qid}",
-                    help="This controls whether the correction affects one document, the selected scope, or all matching documents."
+                    help="This controls whether the correction affects one document, selected documents, or all matching documents."
                 )
 
         if st.button("Apply Answers & Regenerate Corrected Report", type="primary", use_container_width=True):
-            corrected_df, ledger_df = apply_precorrections(
-                base_df,
-                qdf,
-                answers,
-                apply_scopes,
-                st.session_state.get("correction_scope_docs", []),
-            )
+            missing_custom = [qid for qid, ans in answers.items() if not ans.strip()]
+            if missing_custom:
+                st.warning("Some questions use 'Other / custom answer' but have no custom clarification. Please fill them in or choose another option.")
+            else:
+                corrected_df, ledger_df = apply_precorrections(
+                    base_df,
+                    qdf,
+                    answers,
+                    apply_scopes,
+                    st.session_state.get("correction_scope_docs", []),
+                )
 
-            report_df = corrected_view_for_report(corrected_df)
-            records = report_df.to_dict(orient="records")
-            corrected_process_map = generate_process_map(records, ai_config=ai_config)
-            corrected_risk_report = generate_risk_report(records, ai_config=ai_config)
+                report_df = corrected_view_for_report(corrected_df)
+                records = report_df.to_dict(orient="records")
+                corrected_process_map = generate_process_map(records, ai_config=ai_config)
+                corrected_risk_report = generate_risk_report(records, ai_config=ai_config)
 
-            st.session_state.corrected_inventory = corrected_df
-            st.session_state.correction_ledger = ledger_df
-            st.session_state.corrected_process_map = corrected_process_map
-            st.session_state.corrected_risk_report = corrected_risk_report
+                st.session_state.corrected_inventory = corrected_df
+                st.session_state.correction_ledger = ledger_df
+                st.session_state.corrected_process_map = corrected_process_map
+                st.session_state.corrected_risk_report = corrected_risk_report
 
-            st.success(f"Corrections applied. {len(ledger_df)} correction record(s) added to the ledger.")
+                st.success(f"Corrections applied. {len(ledger_df)} correction record(s) added to the ledger.")
 
     elif qdf is not None and qdf.empty:
         st.success("No high-impact clarification questions were generated for this scope.")
+
 
 
 # ============================================================
@@ -1291,6 +1463,34 @@ st.markdown("""
   margin-bottom: 1rem;
 }
 .small-muted { color: #64748b; font-size: 0.9rem; }
+.precorrect-cta {
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+  padding: 1.35rem 1.45rem;
+  border-radius: 22px;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(20,184,166,0.10), rgba(255,255,255,0.95));
+  box-shadow: 0 14px 34px rgba(15,23,42,0.08);
+}
+.precorrect-title { font-size: 1.35rem; font-weight: 800; color: #0f172a; margin-bottom: 0.35rem; }
+.precorrect-copy { color: #475569; font-size: 0.98rem; line-height: 1.55; }
+.guided-card {
+  padding: 1rem 1.15rem;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.88);
+  margin-bottom: 1rem;
+}
+.recommended-pill {
+  display: inline-block;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(20,184,166,0.12);
+  color: #0f766e;
+  font-weight: 700;
+  font-size: 0.82rem;
+  margin-bottom: 0.45rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1369,6 +1569,7 @@ for key, default in {
     "correction_ledger": None,
     "correction_scope_docs": [],
     "correction_scope_type": "",
+    "show_precorrection": False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1429,8 +1630,9 @@ def run_analysis(extracted_docs):
     st.session_state.correction_questions = None
     st.session_state.correction_ledger = None
     st.session_state.correction_scope_docs = []
+    st.session_state.show_precorrection = False
 
-    status.success("Initial analysis complete. You can now review the dashboard or run pre-correction.")
+    status.success("Initial analysis complete. Review the dashboard first, then start guided pre-correction from the large button below.")
     progress.progress(1.0)
 
 def metric_card(label, value):
@@ -1644,10 +1846,30 @@ if st.session_state.inventory is not None:
 
     render_dashboard(dashboard_df)
 
+    st.markdown("""
+    <div class="precorrect-cta">
+      <div class="precorrect-title">Ready to pre-correct the diagnosis?</div>
+      <div class="precorrect-copy">
+        After reviewing the dashboard, run a guided pre-correction round. The system will ask a small number of targeted questions, recommend the safest option, leave room for your own answer, and let you choose whether each correction applies to the batch, a segment, selected documents, or one document only.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("Start Guided Pre-correction", type="primary", use_container_width=True):
+        st.session_state.show_precorrection = True
+
+    if st.session_state.show_precorrection:
+        base_for_correction = st.session_state.corrected_inventory if st.session_state.corrected_inventory is not None else st.session_state.inventory
+        base_for_correction = corrected_view_for_report(base_for_correction)
+        render_precorrection_workbench(base_for_correction, ai_config)
+
+        if st.session_state.correction_ledger is not None and not st.session_state.correction_ledger.empty:
+            st.markdown("### Correction Ledger")
+            st.dataframe(st.session_state.correction_ledger, use_container_width=True, hide_index=True)
+
     st.markdown("---")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "Inventory table",
-        "Pre-correction",
         "Process map",
         "Risk report",
         "Download reports"
@@ -1666,21 +1888,12 @@ if st.session_state.inventory is not None:
         st.dataframe(display_df[display_cols], use_container_width=True, hide_index=True)
 
     with tab2:
-        base_for_correction = st.session_state.corrected_inventory if st.session_state.corrected_inventory is not None else st.session_state.inventory
-        base_for_correction = corrected_view_for_report(base_for_correction)
-        render_precorrection_workbench(base_for_correction, ai_config)
-
-        if st.session_state.correction_ledger is not None and not st.session_state.correction_ledger.empty:
-            st.markdown("### Correction Ledger")
-            st.dataframe(st.session_state.correction_ledger, use_container_width=True, hide_index=True)
-
-    with tab3:
         st.markdown(active_process_map)
 
-    with tab4:
+    with tab3:
         st.markdown(active_risk_report)
 
-    with tab5:
+    with tab4:
         df_to_download = corrected_view_for_report(active_df)
         process_map = active_process_map
         risk_report = active_risk_report
