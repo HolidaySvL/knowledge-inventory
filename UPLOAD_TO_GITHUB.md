@@ -1,4 +1,4 @@
-# Upload to GitHub by Web Page
+# Upload v10 to GitHub by Web Page
 
 This version does not use folders like `utils/` or `prompts/`.
 
@@ -10,6 +10,7 @@ requirements.txt
 packages.txt
 runtime.txt
 README.md
+UPLOAD_TO_GITHUB.md
 ```
 
 Steps:
@@ -19,10 +20,7 @@ Steps:
 3. Click **Upload files**.
 4. Drag these files into the upload area.
 5. Click **Commit changes**.
-6. Go to Streamlit Cloud.
-7. Create a new app.
-8. Select this repo.
-9. Main file path: `app.py`.
-10. Deploy.
+6. Streamlit Cloud should redeploy automatically if connected to the repo.
+7. If it does not, open Streamlit Cloud → Manage app → Reboot / Redeploy.
 
 Do not upload the zip file itself.

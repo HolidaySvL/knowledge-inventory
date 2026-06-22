@@ -751,6 +751,511 @@ def report_zip_bytes(df: pd.DataFrame, process_map: str, risk_report: str) -> by
         z.writestr("document_risk_report.md", markdown_bytes(risk_report))
     return buffer.getvalue()
 
+
+# ============================================================
+# Scope-aware Pre-correction
+# ============================================================
+
+def lower_risk_one_level(level: str) -> str:
+    if level == "High":
+        return "Medium"
+    if level == "Medium":
+        return "Low"
+    return level or "Medium"
+
+def is_actionable_answer(answer: str) -> bool:
+    if not answer or not answer.strip():
+        return False
+    bad_tokens = ["unknown", "not sure", "unsure", "tbd", "to be confirmed", "不确定", "不知道", "待确认"]
+    lower = answer.strip().lower()
+    return not any(t in lower for t in bad_tokens)
+
+def detect_issue_types(row: Dict[str, Any]) -> List[str]:
+    reason = str(row.get("risk_reason", "")).lower()
+    doc_type = str(row.get("document_type", "")).lower()
+    file_type = str(row.get("file_type", "")).lower()
+    summary = str(row.get("summary", "")).lower()
+
+    issues = []
+
+    if "version" in reason or "current" in reason or "latest" in reason:
+        issues.append("version_unclear")
+    if "owner" in reason or "responsible" in reason:
+        issues.append("owner_unclear")
+    if "unclear" in reason or "conditional" in reason or "vague" in reason:
+        issues.append("rule_unclear")
+    if "extraction" in reason or "ocr" in reason or "failed" in reason or "legacy" in reason:
+        issues.append("extraction_incomplete")
+    if "meeting" in doc_type or "presentation" in doc_type or file_type in [".ppt", ".pptx"]:
+        issues.append("source_of_truth_unclear")
+    if "conflict" in reason or "inconsistent" in reason or "conflicting" in summary:
+        issues.append("conflict_detected")
+    if str(row.get("risk_level", "")) == "High" and not issues:
+        issues.append("high_risk_general")
+
+    return list(dict.fromkeys(issues))
+
+def build_issue_registry(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    for _, row in df.iterrows():
+        row_dict = row.to_dict()
+        issue_types = detect_issue_types(row_dict)
+
+        for issue_type in issue_types:
+            rows.append({
+                "issue_id": f"ISS-{len(rows)+1:03d}",
+                "document_name": row_dict.get("document_name", ""),
+                "document_type": row_dict.get("document_type", ""),
+                "department": row_dict.get("department", ""),
+                "business_process": row_dict.get("business_process", ""),
+                "risk_level": row_dict.get("risk_level", ""),
+                "issue_type": issue_type,
+                "uncertain_point": row_dict.get("risk_reason", ""),
+                "impact_level": "High" if row_dict.get("risk_level") == "High" else "Medium",
+                "confidence": "Low" if row_dict.get("risk_level") == "High" else "Medium",
+                "evidence_excerpt": str(row_dict.get("summary", ""))[:350],
+            })
+
+    return pd.DataFrame(rows)
+
+def issue_label(issue_type: str) -> str:
+    labels = {
+        "version_unclear": "Version / validity unclear",
+        "owner_unclear": "Owner unclear",
+        "rule_unclear": "Business rule unclear",
+        "source_of_truth_unclear": "Source-of-truth unclear",
+        "extraction_incomplete": "Extraction quality issue",
+        "conflict_detected": "Potential conflict",
+        "high_risk_general": "High-risk item",
+    }
+    return labels.get(issue_type, issue_type)
+
+def build_question(issue_type, docs, scope_type, context_label):
+    affected = docs["document_name"].dropna().unique().tolist()
+    count = len(affected)
+
+    base = {
+        "question_group_id": "",
+        "scope_type": scope_type,
+        "issue_type": issue_type,
+        "issue_label": issue_label(issue_type),
+        "affected_documents": affected,
+        "affected_document_count": count,
+        "context_label": context_label,
+        "user_answer": "",
+        "apply_scope": "Affected documents in this question",
+        "status": "Open",
+    }
+
+    if issue_type == "version_unclear":
+        if scope_type == "Document-level":
+            q = "Should this document be treated as the current valid version?"
+            assump = "This document may not be the latest approved version."
+        else:
+            q = f"I found {count} document(s) with unclear version or validity. How should these documents be treated?"
+            assump = "Documents without clear version information should remain Needs Review until confirmed."
+        why = "Version validity affects whether the document can be used as a trusted source for knowledge ingestion."
+
+    elif issue_type == "owner_unclear":
+        if scope_type == "Document-level":
+            q = "Who is the owner or responsible team for this document?"
+            assump = "The responsible owner is not clearly stated."
+        else:
+            q = f"I found {count} document(s) with unclear owner information. Is there a default owner or responsible team for this scope?"
+            assump = "A shared owner may apply to this group of documents."
+        why = "Ownership matters because business users need to know who can approve, update, or validate the knowledge."
+
+    elif issue_type == "source_of_truth_unclear":
+        if scope_type == "Document-level":
+            q = "Should this document be treated as source of truth, or only as supporting material?"
+            assump = "This document may be supporting material rather than an authoritative source."
+        else:
+            q = f"I found {count} document(s) that may be supporting materials, such as meeting notes or presentations. Should they be treated as source of truth?"
+            assump = "Meeting notes and presentations should generally be supporting materials unless explicitly approved."
+        why = "Source-of-truth status affects whether content can be directly used for RAG or enterprise assistant answers."
+
+    elif issue_type == "rule_unclear":
+        if scope_type == "Document-level":
+            q = "What is the correct business rule or interpretation for the unclear part in this document?"
+            assump = "Some rule wording is conditional, vague, or incomplete."
+        else:
+            q = f"I found {count} document(s) with vague or conditional rule wording. Is there a shared rule that should be applied to this scope?"
+            assump = "The current wording may need human clarification before knowledge ingestion."
+        why = "Unclear rules can lead to unreliable AI answers or inconsistent process guidance."
+
+    elif issue_type == "extraction_incomplete":
+        if scope_type == "Document-level":
+            q = "Can this document be analyzed based on the extracted text, or should it remain Needs Review due to extraction limitations?"
+            assump = "The extracted text may be incomplete."
+        else:
+            q = f"I found {count} document(s) with extraction or OCR limitations. Should these remain Needs Review until manually checked?"
+            assump = "Incomplete extraction should block direct knowledge ingestion."
+        why = "If text extraction is incomplete, AI analysis may miss important content."
+
+    elif issue_type == "conflict_detected":
+        q = f"I found potential conflicts in {count} document(s). Which rule or source should be treated as the current standard?"
+        assump = "Conflicting information should not be published without confirmation."
+        why = "Conflicts must be resolved before the knowledge can be trusted."
+
+    else:
+        q = f"I found {count} high-risk document(s) in this scope. Is there a shared rule or clarification that can reduce the review risk?"
+        assump = "High-risk documents should remain Needs Review unless clarified."
+        why = "High-risk items may affect downstream AI answer reliability."
+
+    base.update({
+        "why_it_matters": why,
+        "ai_assumption": assump,
+        "question_to_user": q,
+    })
+    return base
+
+def generate_scope_questions(df: pd.DataFrame, scope_type: str, scope_df: pd.DataFrame) -> pd.DataFrame:
+    issue_df = build_issue_registry(scope_df)
+    if issue_df.empty:
+        return pd.DataFrame()
+
+    max_questions = {
+        "Batch-level": 8,
+        "Segment-level": 6,
+        "Selected-documents": 5,
+        "Document-level": 5,
+    }.get(scope_type, 6)
+
+    questions = []
+
+    if scope_type in ["Batch-level", "Segment-level", "Selected-documents"]:
+        priority = {
+            "conflict_detected": 0,
+            "version_unclear": 1,
+            "owner_unclear": 2,
+            "source_of_truth_unclear": 3,
+            "rule_unclear": 4,
+            "extraction_incomplete": 5,
+            "high_risk_general": 6,
+        }
+
+        grouped = []
+        for issue_type, g in issue_df.groupby("issue_type"):
+            affected_docs = g["document_name"].dropna().unique().tolist()
+            high_count = int((g["risk_level"] == "High").sum())
+            grouped.append({
+                "issue_type": issue_type,
+                "g": g,
+                "affected_count": len(affected_docs),
+                "high_count": high_count,
+                "priority": priority.get(issue_type, 99),
+            })
+
+        grouped = sorted(grouped, key=lambda x: (x["priority"], -x["high_count"], -x["affected_count"]))
+
+        context_label = "entire batch" if scope_type == "Batch-level" else "selected segment"
+        for item in grouped[:max_questions]:
+            q = build_question(item["issue_type"], item["g"], scope_type, context_label)
+            questions.append(q)
+
+    else:
+        doc_name = scope_df["document_name"].iloc[0] if not scope_df.empty else "selected document"
+        context_label = doc_name
+
+        for issue_type, g in issue_df.groupby("issue_type"):
+            q = build_question(issue_type, g, scope_type, context_label)
+            questions.append(q)
+            if len(questions) >= max_questions:
+                break
+
+    for i, q in enumerate(questions, start=1):
+        q["question_group_id"] = f"QG-{i:03d}"
+
+    return pd.DataFrame(questions)
+
+def apply_precorrections(
+    inventory_df: pd.DataFrame,
+    questions_df: pd.DataFrame,
+    answers: Dict[str, str],
+    apply_scopes: Dict[str, str],
+    selected_scope_docs: List[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    corrected = inventory_df.copy()
+
+    if "corrected_risk_level" not in corrected.columns:
+        corrected["corrected_risk_level"] = corrected["risk_level"]
+    if "corrected_can_enter_kb" not in corrected.columns:
+        corrected["corrected_can_enter_kb"] = corrected["can_enter_kb"]
+    if "corrected_needs_human_review" not in corrected.columns:
+        corrected["corrected_needs_human_review"] = corrected["needs_human_review"]
+    if "correction_notes" not in corrected.columns:
+        corrected["correction_notes"] = ""
+
+    ledger_rows = []
+
+    if questions_df is None or questions_df.empty:
+        return corrected, pd.DataFrame()
+
+    for _, q in questions_df.iterrows():
+        qid = q["question_group_id"]
+        answer = answers.get(qid, "").strip()
+        if not answer:
+            continue
+
+        apply_scope = apply_scopes.get(qid, "Affected documents in this question")
+        affected_docs = q.get("affected_documents", [])
+        if isinstance(affected_docs, str):
+            try:
+                affected_docs = json.loads(affected_docs)
+            except Exception:
+                affected_docs = [affected_docs]
+
+        issue_type = q.get("issue_type", "")
+
+        if apply_scope == "Current selected scope":
+            target_docs = selected_scope_docs
+        elif apply_scope == "Entire batch matching this issue":
+            target_docs = []
+            for _, row in corrected.iterrows():
+                if issue_type in detect_issue_types(row.to_dict()):
+                    target_docs.append(row.get("document_name", ""))
+        elif apply_scope == "This document only":
+            target_docs = affected_docs[:1]
+        else:
+            target_docs = affected_docs
+
+        target_docs = list(dict.fromkeys([d for d in target_docs if d]))
+
+        for doc_name in target_docs:
+            mask = corrected["document_name"] == doc_name
+            if not mask.any():
+                continue
+
+            before_risk = corrected.loc[mask, "corrected_risk_level"].iloc[0]
+            before_kb = corrected.loc[mask, "corrected_can_enter_kb"].iloc[0]
+
+            if is_actionable_answer(answer):
+                after_risk = lower_risk_one_level(before_risk)
+            else:
+                after_risk = before_risk
+
+            after_kb = "Yes" if after_risk == "Low" else "Needs Review"
+            after_review = False if after_risk == "Low" else True
+
+            note = f"[{qid} | {issue_label(issue_type)} | {apply_scope}] {answer}"
+            existing = str(corrected.loc[mask, "correction_notes"].iloc[0] or "")
+            corrected.loc[mask, "correction_notes"] = (existing + "\n" + note).strip()
+            corrected.loc[mask, "corrected_risk_level"] = after_risk
+            corrected.loc[mask, "corrected_can_enter_kb"] = after_kb
+            corrected.loc[mask, "corrected_needs_human_review"] = after_review
+
+            ledger_rows.append({
+                "correction_id": f"COR-{len(ledger_rows)+1:03d}",
+                "question_group_id": qid,
+                "scope_type": q.get("scope_type", ""),
+                "issue_type": issue_type,
+                "document_name": doc_name,
+                "user_answer": answer,
+                "apply_scope": apply_scope,
+                "before_risk_level": before_risk,
+                "after_risk_level": after_risk,
+                "before_can_enter_kb": before_kb,
+                "after_can_enter_kb": after_kb,
+                "correction_note": note,
+                "status": "Applied",
+            })
+
+    return corrected, pd.DataFrame(ledger_rows)
+
+def corrected_view_for_report(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "corrected_risk_level" not in df.columns:
+        return df
+
+    report_df = df.copy()
+    report_df["risk_level_original"] = report_df["risk_level"]
+    report_df["can_enter_kb_original"] = report_df["can_enter_kb"]
+    report_df["needs_human_review_original"] = report_df["needs_human_review"]
+
+    report_df["risk_level"] = report_df["corrected_risk_level"]
+    report_df["can_enter_kb"] = report_df["corrected_can_enter_kb"]
+    report_df["needs_human_review"] = report_df["corrected_needs_human_review"]
+    return report_df
+
+def dataframe_excel_bytes(df: pd.DataFrame, sheet_name: str = "Sheet1") -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+        ws = writer.book[sheet_name[:31]]
+
+        header_fill = PatternFill("solid", fgColor="D9EAF7")
+        header_font = Font(bold=True)
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        for col_idx, col in enumerate(ws.columns, start=1):
+            max_len = 0
+            for cell in col:
+                value = "" if cell.value is None else str(cell.value)
+                max_len = max(max_len, min(len(value), 60))
+            ws.column_dimensions[get_column_letter(col_idx)].width = max(12, max_len + 2)
+
+        ws.freeze_panes = "A2"
+
+    return buffer.getvalue()
+
+def report_zip_bytes_with_ledger(df: pd.DataFrame, process_map: str, risk_report: str, ledger_df: pd.DataFrame | None = None) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("knowledge_inventory_corrected.xlsx", inventory_excel_bytes(df))
+        z.writestr("process_map_corrected.md", markdown_bytes(process_map))
+        z.writestr("document_risk_report_corrected.md", markdown_bytes(risk_report))
+        if ledger_df is not None and not ledger_df.empty:
+            z.writestr("correction_ledger.xlsx", dataframe_excel_bytes(ledger_df, "Correction Ledger"))
+    return buffer.getvalue()
+
+def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, Any]):
+    st.subheader("Scope-aware Pre-correction")
+    st.caption("Select the correction scope, generate targeted clarification questions, answer only what matters, and apply corrections at a controlled scope.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        scope_choice = st.selectbox(
+            "Correction scope",
+            ["Batch-level", "Segment-level", "Selected-documents", "Document-level"],
+            help="Choose how broad or precise this correction round should be."
+        )
+
+    scope_df = base_df.copy()
+
+    with c2:
+        if scope_choice == "Segment-level":
+            dept_options = sorted(scope_df["department"].dropna().unique().tolist()) if "department" in scope_df else []
+            selected_depts = st.multiselect("Department", dept_options, default=dept_options[:1] if dept_options else [])
+            if selected_depts:
+                scope_df = scope_df[scope_df["department"].isin(selected_depts)]
+        else:
+            st.write("")
+
+    with c3:
+        if scope_choice == "Segment-level":
+            process_options = sorted(scope_df["business_process"].dropna().unique().tolist()) if "business_process" in scope_df else []
+            selected_processes = st.multiselect("Process", process_options, default=[])
+            if selected_processes:
+                scope_df = scope_df[scope_df["business_process"].isin(selected_processes)]
+        else:
+            st.write("")
+
+    with c4:
+        if scope_choice == "Segment-level":
+            risk_options = sorted(scope_df["risk_level"].dropna().unique().tolist()) if "risk_level" in scope_df else []
+            selected_risks = st.multiselect("Risk", risk_options, default=risk_options)
+            if selected_risks:
+                scope_df = scope_df[scope_df["risk_level"].isin(selected_risks)]
+        else:
+            st.write("")
+
+    if scope_choice == "Selected-documents":
+        doc_options = base_df["document_name"].dropna().tolist()
+        selected_docs = st.multiselect("Select documents to refine", doc_options)
+        scope_df = base_df[base_df["document_name"].isin(selected_docs)] if selected_docs else base_df.iloc[0:0]
+
+    elif scope_choice == "Document-level":
+        doc_options = base_df["document_name"].dropna().tolist()
+        one_doc = st.selectbox("Select one document", doc_options) if doc_options else None
+        scope_df = base_df[base_df["document_name"] == one_doc] if one_doc else base_df.iloc[0:0]
+
+    st.info(f"Current correction scope includes {len(scope_df)} document(s).")
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Scope documents", len(scope_df))
+    if not scope_df.empty and "risk_level" in scope_df:
+        metric_cols[1].metric("High risk in scope", int((scope_df["risk_level"] == "High").sum()))
+        metric_cols[2].metric("Need review in scope", int(scope_df["needs_human_review"].astype(bool).sum()) if "needs_human_review" in scope_df else 0)
+    issue_df = build_issue_registry(scope_df)
+    metric_cols[3].metric("Detected issues", len(issue_df))
+
+    if st.button("Generate Clarification Questions", type="secondary", use_container_width=True):
+        if scope_df.empty:
+            st.warning("No documents in current scope.")
+        else:
+            qdf = generate_scope_questions(base_df, scope_choice, scope_df)
+            st.session_state.correction_questions = qdf
+            st.session_state.correction_scope_docs = scope_df["document_name"].dropna().tolist()
+            st.session_state.correction_scope_type = scope_choice
+
+    qdf = st.session_state.get("correction_questions")
+
+    if qdf is not None and not qdf.empty:
+        st.markdown("### Clarification Questions")
+        st.caption(f"{len(qdf)} grouped question(s) generated. Each answer can correct one or multiple documents depending on the apply scope you choose.")
+
+        answers = {}
+        apply_scopes = {}
+
+        for _, q in qdf.iterrows():
+            qid = q["question_group_id"]
+            with st.expander(f"{qid} · {q['issue_label']} · {q['affected_document_count']} affected document(s)", expanded=True):
+                st.markdown(f"**Question**  \n{q['question_to_user']}")
+                st.markdown(f"**Why it matters**  \n{q['why_it_matters']}")
+                st.markdown(f"**AI assumption**  \n{q['ai_assumption']}")
+
+                docs = q.get("affected_documents", [])
+                if isinstance(docs, str):
+                    try:
+                        docs = json.loads(docs)
+                    except Exception:
+                        docs = [docs]
+                if docs:
+                    st.caption("Affected documents: " + ", ".join(docs[:8]) + (" ..." if len(docs) > 8 else ""))
+
+                answers[qid] = st.text_area(
+                    "Your clarification",
+                    key=f"answer_{qid}",
+                    placeholder="Example: Treat Procurement Operations as the default owner for this process.",
+                    height=80
+                )
+
+                scope_options = ["Affected documents in this question", "Current selected scope", "Entire batch matching this issue"]
+                if q["affected_document_count"] >= 1:
+                    scope_options.append("This document only")
+
+                apply_scopes[qid] = st.selectbox(
+                    "Apply this answer to",
+                    scope_options,
+                    key=f"apply_scope_{qid}",
+                    help="This controls whether the correction affects one document, the selected scope, or all matching documents."
+                )
+
+        if st.button("Apply Answers & Regenerate Corrected Report", type="primary", use_container_width=True):
+            corrected_df, ledger_df = apply_precorrections(
+                base_df,
+                qdf,
+                answers,
+                apply_scopes,
+                st.session_state.get("correction_scope_docs", []),
+            )
+
+            report_df = corrected_view_for_report(corrected_df)
+            records = report_df.to_dict(orient="records")
+            corrected_process_map = generate_process_map(records, ai_config=ai_config)
+            corrected_risk_report = generate_risk_report(records, ai_config=ai_config)
+
+            st.session_state.corrected_inventory = corrected_df
+            st.session_state.correction_ledger = ledger_df
+            st.session_state.corrected_process_map = corrected_process_map
+            st.session_state.corrected_risk_report = corrected_risk_report
+
+            st.success(f"Corrections applied. {len(ledger_df)} correction record(s) added to the ledger.")
+
+    elif qdf is not None and qdf.empty:
+        st.success("No high-impact clarification questions were generated for this scope.")
+
+
 # ============================================================
 # Streamlit UI
 # ============================================================
@@ -857,6 +1362,13 @@ for key, default in {
     "risk_report": "",
     "raw_docs_count": 0,
     "extraction_warnings": [],
+    "corrected_inventory": None,
+    "corrected_process_map": "",
+    "corrected_risk_report": "",
+    "correction_questions": None,
+    "correction_ledger": None,
+    "correction_scope_docs": [],
+    "correction_scope_type": "",
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -910,7 +1422,15 @@ def run_analysis(extracted_docs):
     st.session_state.risk_report = risk_report
     st.session_state.extraction_warnings = warnings
 
-    status.success("Analysis complete.")
+    # Reset pre-correction state when a new analysis is run.
+    st.session_state.corrected_inventory = None
+    st.session_state.corrected_process_map = ""
+    st.session_state.corrected_risk_report = ""
+    st.session_state.correction_questions = None
+    st.session_state.correction_ledger = None
+    st.session_state.correction_scope_docs = []
+
+    status.success("Initial analysis complete. You can now review the dashboard or run pre-correction.")
     progress.progress(1.0)
 
 def metric_card(label, value):
@@ -1108,39 +1628,70 @@ if st.button("Run Knowledge Inventory Analysis", type="primary", use_container_w
     run_analysis(unique_docs)
 st.markdown("</div>", unsafe_allow_html=True)
 
+
 if st.session_state.inventory is not None:
     st.markdown("---")
-    render_dashboard(st.session_state.inventory)
+
+    active_df = st.session_state.corrected_inventory if st.session_state.corrected_inventory is not None else st.session_state.inventory
+    active_process_map = st.session_state.corrected_process_map if st.session_state.corrected_inventory is not None else st.session_state.process_map
+    active_risk_report = st.session_state.corrected_risk_report if st.session_state.corrected_inventory is not None else st.session_state.risk_report
+
+    if st.session_state.corrected_inventory is not None:
+        st.success("Showing corrected dashboard after pre-correction.")
+        dashboard_df = corrected_view_for_report(active_df)
+    else:
+        dashboard_df = active_df
+
+    render_dashboard(dashboard_df)
 
     st.markdown("---")
-    tab1, tab2, tab3, tab4 = st.tabs(["Inventory table", "Process map", "Risk report", "Download reports"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Inventory table",
+        "Pre-correction",
+        "Process map",
+        "Risk report",
+        "Download reports"
+    ])
 
     with tab1:
+        display_df = corrected_view_for_report(active_df)
         display_cols = [
             "document_name", "file_type", "document_type", "department", "business_process",
             "knowledge_category", "risk_level", "can_enter_kb",
             "needs_human_review", "summary", "recommended_action"
         ]
-        display_cols = [c for c in display_cols if c in st.session_state.inventory.columns]
-        st.dataframe(st.session_state.inventory[display_cols], use_container_width=True, hide_index=True)
+        if st.session_state.corrected_inventory is not None:
+            display_cols.extend(["risk_level_original", "can_enter_kb_original", "correction_notes"])
+        display_cols = [c for c in display_cols if c in display_df.columns]
+        st.dataframe(display_df[display_cols], use_container_width=True, hide_index=True)
 
     with tab2:
-        st.markdown(st.session_state.process_map)
+        base_for_correction = st.session_state.corrected_inventory if st.session_state.corrected_inventory is not None else st.session_state.inventory
+        base_for_correction = corrected_view_for_report(base_for_correction)
+        render_precorrection_workbench(base_for_correction, ai_config)
+
+        if st.session_state.correction_ledger is not None and not st.session_state.correction_ledger.empty:
+            st.markdown("### Correction Ledger")
+            st.dataframe(st.session_state.correction_ledger, use_container_width=True, hide_index=True)
 
     with tab3:
-        st.markdown(st.session_state.risk_report)
+        st.markdown(active_process_map)
 
     with tab4:
-        df = st.session_state.inventory
-        process_map = st.session_state.process_map
-        risk_report = st.session_state.risk_report
+        st.markdown(active_risk_report)
 
-        d1, d2, d3, d4 = st.columns(4)
+    with tab5:
+        df_to_download = corrected_view_for_report(active_df)
+        process_map = active_process_map
+        risk_report = active_risk_report
+        ledger_df = st.session_state.correction_ledger
+
+        d1, d2, d3, d4, d5 = st.columns(5)
         with d1:
             st.download_button(
                 "Download Excel",
-                data=inventory_excel_bytes(df),
-                file_name="knowledge_inventory.xlsx",
+                data=inventory_excel_bytes(df_to_download),
+                file_name="knowledge_inventory_corrected.xlsx" if st.session_state.corrected_inventory is not None else "knowledge_inventory.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -1148,7 +1699,7 @@ if st.session_state.inventory is not None:
             st.download_button(
                 "Download Process Map",
                 data=markdown_bytes(process_map),
-                file_name="process_map.md",
+                file_name="process_map_corrected.md" if st.session_state.corrected_inventory is not None else "process_map.md",
                 mime="text/markdown",
                 use_container_width=True,
             )
@@ -1156,15 +1707,27 @@ if st.session_state.inventory is not None:
             st.download_button(
                 "Download Risk Report",
                 data=markdown_bytes(risk_report),
-                file_name="document_risk_report.md",
+                file_name="document_risk_report_corrected.md" if st.session_state.corrected_inventory is not None else "document_risk_report.md",
                 mime="text/markdown",
                 use_container_width=True,
             )
         with d4:
+            if ledger_df is not None and not ledger_df.empty:
+                st.download_button(
+                    "Download Ledger",
+                    data=dataframe_excel_bytes(ledger_df, "Correction Ledger"),
+                    file_name="correction_ledger.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            else:
+                st.button("Download Ledger", disabled=True, use_container_width=True)
+
+        with d5:
             st.download_button(
                 "Download All",
-                data=report_zip_bytes(df, process_map, risk_report),
-                file_name="knowledge_inventory_report_bundle.zip",
+                data=report_zip_bytes_with_ledger(df_to_download, process_map, risk_report, ledger_df),
+                file_name="knowledge_inventory_corrected_bundle.zip" if st.session_state.corrected_inventory is not None else "knowledge_inventory_report_bundle.zip",
                 mime="application/zip",
                 use_container_width=True,
             )
