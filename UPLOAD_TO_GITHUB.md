@@ -1,6 +1,6 @@
-# Upload v12 to GitHub by Web Page
+# Upload v13 to GitHub by Web Page
 
-This version does not use folders like `utils/` or `prompts/`.
+This version is still a single-file Streamlit deploy package.
 
 Upload these files directly into your GitHub repo root:
 

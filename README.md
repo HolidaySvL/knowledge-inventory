@@ -1,8 +1,8 @@
-# AI Knowledge Inventory — v12 Corrected Documents
+# AI Knowledge Intake Agent — v13 Agent Planner
 
-This is the single-file Streamlit deploy version.
+This is a single-file Streamlit deploy version.
 
-Upload these files to GitHub root:
+Upload these files to the GitHub repo root:
 
 ```text
 app.py
@@ -19,44 +19,67 @@ Then deploy on Streamlit Cloud with:
 Main file path = app.py
 ```
 
-## What is new in v12
+## What is new in v13
 
-v12 adds **Corrected Document Export** after guided pre-correction.
+v13 adds an **Agent Planner** on top of the existing scanner, guided pre-correction, corrected document drafts, and correction ledger.
 
-After users answer the clarification questions and apply corrections, the app now generates:
+After the initial scan, the app now shows an Agent Planner control room that can:
 
-```text
-corrected_documents.zip
-  corrected_documents/*.docx
-  corrected_documents/*.md
-  corrected_documents_manifest.xlsx
-```
+- Read the current dashboard state
+- Identify whether issues are batch-level, segment-level, or document-level
+- Recommend the next best workflow step
+- Explain why that path is recommended
+- Estimate expected impact
+- Prepare guided pre-correction questions for the recommended scope
+- Keep the user in control before applying corrections
 
-The app also keeps the governance outputs:
-
-```text
-knowledge_inventory_corrected.xlsx
-document_risk_report_corrected.md
-process_map_corrected.md
-correction_ledger.xlsx
-```
-
-## User flow
+## Supported workflow
 
 ```text
 Upload documents
-Run initial diagnosis
+↓
+Run initial inventory scan
+↓
 Review dashboard
-Start Guided Pre-correction
-Choose correction scope
-Answer Claude-style recommended options or write a custom answer
-Apply corrections
-Review Correction Ledger
-Download corrected documents
+↓
+Agent Planner recommends next step
+↓
+Run recommended batch / segment / document-level pre-correction
+↓
+User selects recommended option or writes custom answer
+↓
+Apply corrections with controlled scope
+↓
+Generate corrected documents + correction ledger
+↓
+Download corrected outputs
 ```
 
-## Important note
+## Core product idea
 
-The app does not overwrite the original uploaded files. It generates corrected draft documents as new downloadable outputs.
+This is not a standalone chatbot. It is an agentic knowledge intake layer between messy enterprise documents and AI knowledge systems.
 
-This is safer for enterprise governance because the original source file remains untouched, while the correction ledger records what changed and why.
+The agent runs the process. Humans confirm business truth. The system keeps the evidence.
+
+## Supported upload methods
+
+- Upload folder ZIP
+- Upload individual files
+
+## Supported formats
+
+```text
+.docx, .doc
+.xlsx, .xls, .xlsm
+.pptx, .ppt
+.pdf
+.txt, .md, .csv
+.png, .jpg, .jpeg, .webp, .tif, .tiff
+.zip
+```
+
+## Notes
+
+- `.doc` and `.ppt` conversion requires LibreOffice.
+- OCR requires Tesseract.
+- If OCR or conversion fails, the app will show extraction warnings instead of crashing.
