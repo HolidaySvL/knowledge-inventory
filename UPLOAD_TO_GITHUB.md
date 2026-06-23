@@ -1,6 +1,6 @@
-# Upload v13 to GitHub by Web Page
+# Upload v14 to GitHub by Web Page
 
-This version is still a single-file Streamlit deploy package.
+This version is still single-file friendly.
 
 Upload these files directly into your GitHub repo root:
 

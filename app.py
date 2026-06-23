@@ -1679,6 +1679,7 @@ def render_agent_control_room(df: pd.DataFrame, ai_config: Dict[str, Any]):
     st.subheader("Agent Planner")
     st.caption("The agent reads the dashboard state, recommends the next workflow step, and keeps human confirmation in the loop.")
 
+    render_run_highlight("Generate agent recommendation", "The agent will review the dashboard results and recommend the clearest next step for this batch.")
     if st.button("Generate / Refresh Agent Plan", type="primary", use_container_width=True):
         st.session_state.agent_plan = recommend_agent_plan(df)
 
@@ -1712,7 +1713,8 @@ def render_agent_control_room(df: pd.DataFrame, ai_config: Dict[str, Any]):
 
     a, b, c = st.columns(3)
     with a:
-        if st.button("Run Recommended Next Step", use_container_width=True):
+        render_run_highlight("Run recommended next step", "Use the red button to let the agent prepare the recommended pre-correction path. You can still choose another scope if needed.")
+        if st.button("Run Recommended Next Step", type="primary", use_container_width=True):
             run_agent_recommended_step(df, ai_config, plan)
     with b:
         if st.button("Choose Another Scope", use_container_width=True):
@@ -1804,6 +1806,7 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
     metric_cols[3].metric("Detected issues", len(issue_df))
 
     gen_label = "Generate guided questions for this scope"
+    render_run_highlight("Generate clarification questions", "The red button creates targeted questions for the selected scope. Use this after choosing batch, segment, selected documents, or one document.")
     if st.button(gen_label, type="primary", use_container_width=True):
         if scope_df.empty:
             st.warning("No documents in current scope.")
@@ -1817,7 +1820,7 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
     qdf = st.session_state.get("correction_questions")
 
     if qdf is not None and not qdf.empty:
-        st.markdown("### Clarification Questions")
+        render_section_header("Clarification Questions", "Each question includes a recommended option, alternative choices, a custom answer box, and apply-scope control.")
         st.caption(f"{len(qdf)} grouped question(s) generated. Pick an option, review the recommended choice, or write your own clarification.")
 
         answers = {}
@@ -1899,6 +1902,7 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
                     help="This controls whether the correction affects one document, selected documents, or all matching documents."
                 )
 
+        render_run_highlight("Apply answers and generate corrected documents", "After answering the questions, click the red button to apply corrections, update the dashboard, create the ledger, and prepare corrected document drafts.")
         if st.button("Apply Answers & Regenerate Corrected Report", type="primary", use_container_width=True):
             missing_custom = [qid for qid, ans in answers.items() if not ans.strip()]
             if missing_custom:
@@ -1939,6 +1943,584 @@ def render_precorrection_workbench(base_df: pd.DataFrame, ai_config: Dict[str, A
         st.success("No high-impact clarification questions were generated for this scope.")
 
 
+
+
+# ============================================================
+# UI Redesign Helpers
+# ============================================================
+
+def inject_v14_css():
+    st.markdown("""
+    <style>
+    :root {
+        --navy: #0f172a;
+        --blue: #2563eb;
+        --teal: #14b8a6;
+        --muted: #64748b;
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --border: #e2e8f0;
+        --soft-blue: #eff6ff;
+        --soft-teal: #f0fdfa;
+        --soft-amber: #fffbeb;
+        --soft-red: #fef2f2;
+    }
+
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 3rem;
+        max-width: 1220px;
+    }
+
+    div[data-testid="stVerticalBlock"] {
+        gap: 0.8rem;
+    }
+
+    .hero-card {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fbff 45%, #eefdfb 100%);
+        border: 1px solid #dbeafe;
+        border-radius: 28px;
+        padding: 2.1rem 2.3rem;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+        margin-bottom: 1rem;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .hero-card:after {
+        content: "";
+        position: absolute;
+        width: 280px;
+        height: 280px;
+        right: -80px;
+        top: -80px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(20, 184, 166, 0.24), rgba(37, 99, 235, 0.02));
+    }
+
+    .eyebrow {
+        color: #0f766e;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        font-size: .78rem;
+        margin-bottom: .45rem;
+    }
+
+    .hero-title {
+        color: var(--navy);
+        font-size: 2.65rem;
+        line-height: 1.05;
+        font-weight: 850;
+        letter-spacing: -0.045em;
+        margin: 0;
+    }
+
+    .hero-subtitle {
+        color: #475569;
+        font-size: 1.08rem;
+        max-width: 760px;
+        margin-top: .85rem;
+        line-height: 1.62;
+    }
+
+    .pill-row {
+        display: flex;
+        gap: .55rem;
+        flex-wrap: wrap;
+        margin-top: 1.25rem;
+    }
+
+    .pill {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: .38rem .72rem;
+        color: #334155;
+        background: rgba(255,255,255,.78);
+        font-size: .84rem;
+        font-weight: 650;
+    }
+
+    .section-card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        padding: 1.25rem 1.35rem;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.045);
+        margin-bottom: .8rem;
+    }
+
+    .section-title {
+        font-size: 1.28rem;
+        font-weight: 800;
+        color: var(--navy);
+        margin: 0 0 .35rem 0;
+        letter-spacing: -0.02em;
+    }
+
+    .section-caption {
+        color: var(--muted);
+        font-size: .92rem;
+        line-height: 1.5;
+        margin-bottom: .6rem;
+    }
+
+    .agent-card {
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 52%, #0f766e 100%);
+        color: white;
+        border-radius: 26px;
+        padding: 1.7rem 1.8rem;
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.20);
+        margin: 1rem 0;
+    }
+
+    .agent-card h3 {
+        color: white;
+        margin: 0 0 .45rem 0;
+        font-size: 1.55rem;
+        font-weight: 850;
+        letter-spacing: -0.02em;
+    }
+
+    .agent-card p {
+        color: rgba(255,255,255,.86);
+        margin: 0;
+        line-height: 1.55;
+    }
+
+    .recommendation-box {
+        background: rgba(255,255,255,.12);
+        border: 1px solid rgba(255,255,255,.22);
+        border-radius: 18px;
+        padding: 1rem 1.1rem;
+        margin-top: 1rem;
+    }
+
+    .recommendation-label {
+        color: #99f6e4;
+        font-size: .78rem;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        font-weight: 800;
+        margin-bottom: .35rem;
+    }
+
+    .recommendation-action {
+        font-size: 1.25rem;
+        font-weight: 850;
+        color: white;
+        margin-bottom: .25rem;
+    }
+
+    .status-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: .85rem;
+        margin: .8rem 0 1rem 0;
+    }
+
+    .status-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 18px;
+        padding: 1rem;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.045);
+    }
+
+    .status-label {
+        color: #64748b;
+        font-size: .78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        margin-bottom: .35rem;
+    }
+
+    .status-value {
+        color: #0f172a;
+        font-size: 1.55rem;
+        font-weight: 850;
+        line-height: 1;
+    }
+
+    .status-note {
+        color: #64748b;
+        font-size: .78rem;
+        margin-top: .35rem;
+    }
+
+    .stepper {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        flex-wrap: wrap;
+        margin: .9rem 0 1.2rem 0;
+    }
+
+    .step {
+        display: flex;
+        align-items: center;
+        gap: .45rem;
+        padding: .55rem .72rem;
+        border-radius: 999px;
+        border: 1px solid #dbeafe;
+        background: #ffffff;
+        color: #334155;
+        font-size: .82rem;
+        font-weight: 700;
+    }
+
+    .step.active {
+        background: #eff6ff;
+        border-color: #60a5fa;
+        color: #1d4ed8;
+    }
+
+    .step.done {
+        background: #f0fdfa;
+        border-color: #5eead4;
+        color: #0f766e;
+    }
+
+    .cta-card {
+        background: linear-gradient(135deg, #f0f9ff 0%, #ecfeff 100%);
+        border: 1px solid #bae6fd;
+        border-radius: 24px;
+        padding: 1.25rem 1.35rem;
+        margin: 1rem 0;
+    }
+
+    .cta-title {
+        color: #0f172a;
+        font-size: 1.25rem;
+        font-weight: 850;
+        margin-bottom: .35rem;
+    }
+
+    .cta-body {
+        color: #475569;
+        font-size: .96rem;
+        line-height: 1.5;
+        margin-bottom: .7rem;
+    }
+
+    .ledger-ready {
+        background: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        border-radius: 20px;
+        padding: 1rem 1.15rem;
+        color: #14532d;
+        font-weight: 700;
+        margin: .8rem 0;
+    }
+
+    .question-card {
+        border: 1px solid #dbeafe;
+        background: #ffffff;
+        border-radius: 20px;
+        padding: 1.05rem 1.15rem;
+        margin-bottom: .85rem;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.045);
+    }
+
+    .question-title {
+        color: #0f172a;
+        font-weight: 850;
+        font-size: 1.05rem;
+        margin-bottom: .35rem;
+    }
+
+    .recommended-pill {
+        display: inline-block;
+        background: #dcfce7;
+        color: #166534;
+        border: 1px solid #86efac;
+        padding: .22rem .48rem;
+        border-radius: 999px;
+        font-size: .75rem;
+        font-weight: 850;
+        margin-left: .35rem;
+    }
+
+    div.stButton > button[kind="primary"] {
+        border-radius: 15px;
+        padding: .82rem 1.05rem;
+        font-weight: 900;
+        border: none;
+        background: linear-gradient(135deg, #dc2626 0%, #ef4444 55%, #fb7185 100%);
+        color: #ffffff;
+        box-shadow: 0 14px 30px rgba(220, 38, 38, 0.28);
+    }
+
+    div.stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #b91c1c 0%, #dc2626 55%, #f43f5e 100%);
+        color: #ffffff;
+        border: none;
+        transform: translateY(-1px);
+    }
+
+    div.stButton > button {
+        border-radius: 14px;
+        padding: .72rem 1rem;
+        font-weight: 800;
+    }
+
+    div.stDownloadButton > button {
+        border-radius: 15px;
+        padding: .78rem 1.05rem;
+        font-weight: 900;
+        border: 1px solid #f59e0b;
+        background: linear-gradient(135deg, #f59e0b 0%, #f97316 62%, #fb923c 100%);
+        color: #ffffff;
+        box-shadow: 0 14px 28px rgba(249, 115, 22, 0.24);
+    }
+
+    div.stDownloadButton > button:hover {
+        background: linear-gradient(135deg, #d97706 0%, #ea580c 62%, #f97316 100%);
+        color: #ffffff;
+        border: 1px solid #ea580c;
+        transform: translateY(-1px);
+    }
+
+    div.stButton > button:disabled,
+    div.stDownloadButton > button:disabled {
+        background: #e2e8f0 !important;
+        color: #94a3b8 !important;
+        border: 1px solid #cbd5e1 !important;
+        box-shadow: none !important;
+    }
+
+    .run-highlight {
+        background: #fff1f2;
+        border: 1px solid #fecdd3;
+        border-left: 7px solid #e11d48;
+        border-radius: 22px;
+        padding: 1.05rem 1.15rem;
+        margin: .9rem 0 .65rem 0;
+        box-shadow: 0 10px 25px rgba(225, 29, 72, 0.08);
+    }
+
+    .run-highlight-title {
+        color: #9f1239;
+        font-size: 1.08rem;
+        font-weight: 900;
+        margin-bottom: .25rem;
+    }
+
+    .run-highlight-body {
+        color: #475569;
+        font-size: .92rem;
+        line-height: 1.45;
+    }
+
+    .download-highlight {
+        background: #fffbeb;
+        border: 1px solid #fde68a;
+        border-left: 7px solid #f59e0b;
+        border-radius: 22px;
+        padding: 1.05rem 1.15rem;
+        margin: .9rem 0 .75rem 0;
+        box-shadow: 0 10px 25px rgba(245, 158, 11, 0.09);
+    }
+
+    .download-highlight-title {
+        color: #92400e;
+        font-size: 1.08rem;
+        font-weight: 900;
+        margin-bottom: .25rem;
+    }
+
+    .download-highlight-body {
+        color: #475569;
+        font-size: .92rem;
+        line-height: 1.45;
+    }
+
+    .next-step-banner {
+        background: linear-gradient(135deg, #fff1f2 0%, #ffffff 55%, #fffbeb 100%);
+        border: 1px solid #fecdd3;
+        border-radius: 24px;
+        padding: 1.2rem 1.3rem;
+        margin: 1rem 0;
+        box-shadow: 0 14px 32px rgba(15, 23, 42, 0.06);
+    }
+
+    .next-step-title {
+        color: #0f172a;
+        font-size: 1.22rem;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        margin-bottom: .3rem;
+    }
+
+    .next-step-body {
+        color: #475569;
+        font-size: .95rem;
+        line-height: 1.5;
+    }
+
+    div[data-testid="stMetric"] {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 18px;
+        padding: .9rem 1rem;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.035);
+    }
+
+    [data-testid="stTabs"] button {
+        font-weight: 750;
+    }
+
+    @media (max-width: 900px) {
+        .status-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .hero-title {
+            font-size: 2rem;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+def render_hero():
+    st.markdown("""
+    <div class="hero-card">
+        <div class="eyebrow">Enterprise AI Knowledge Intake</div>
+        <h1 class="hero-title">AI Knowledge Intake Agent</h1>
+        <div class="hero-subtitle">
+            Scan messy enterprise documents, diagnose knowledge readiness, ask targeted clarification questions,
+            and generate corrected, traceable knowledge assets before RAG or enterprise AI ingestion.
+        </div>
+        <div class="pill-row">
+            <span class="pill">Agent Planner</span>
+            <span class="pill">Scope-aware Pre-correction</span>
+            <span class="pill">Corrected Documents</span>
+            <span class="pill">Correction Ledger</span>
+            <span class="pill">AI-ready Knowledge</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_stepper(current: str):
+    steps = [
+        ("upload", "1. Upload"),
+        ("scan", "2. Initial Scan"),
+        ("planner", "3. Agent Planner"),
+        ("correct", "4. Pre-correction"),
+        ("export", "5. Export"),
+    ]
+    order = [s[0] for s in steps]
+    cur_idx = order.index(current) if current in order else 0
+    html = '<div class="stepper">'
+    for idx, (key, label) in enumerate(steps):
+        cls = "step"
+        if idx < cur_idx:
+            cls += " done"
+        elif idx == cur_idx:
+            cls += " active"
+        icon = "✓" if idx < cur_idx else "●"
+        html += f'<div class="{cls}"><span>{icon}</span><span>{label}</span></div>'
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+def render_status_cards(df):
+    if df is None or df.empty:
+        docs = high = review = kb = 0
+    else:
+        docs = len(df)
+        high = int((df["risk_level"] == "High").sum()) if "risk_level" in df else 0
+        review = int(df["needs_human_review"].astype(bool).sum()) if "needs_human_review" in df else 0
+        kb = int((df["can_enter_kb"].astype(str).str.lower() == "yes").sum()) if "can_enter_kb" in df else 0
+    st.markdown(f"""
+    <div class="status-grid">
+        <div class="status-card">
+            <div class="status-label">Documents</div>
+            <div class="status-value">{docs}</div>
+            <div class="status-note">Analyzed in this batch</div>
+        </div>
+        <div class="status-card">
+            <div class="status-label">High Risk</div>
+            <div class="status-value">{high}</div>
+            <div class="status-note">Need priority attention</div>
+        </div>
+        <div class="status-card">
+            <div class="status-label">Need Review</div>
+            <div class="status-value">{review}</div>
+            <div class="status-note">Require human confirmation</div>
+        </div>
+        <div class="status-card">
+            <div class="status-label">KB-ready</div>
+            <div class="status-value">{kb}</div>
+            <div class="status-note">Potential intake candidates</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_section_header(title: str, caption: str = ""):
+    st.markdown(f"""
+    <div class="section-card">
+        <div class="section-title">{title}</div>
+        <div class="section-caption">{caption}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_agent_recommendation_card(plan: dict | None):
+    if not plan:
+        return
+    action = plan.get("recommended_action", "Review the diagnosis and choose a correction scope")
+    why = plan.get("why", "The agent will recommend the next best step based on document risks and issue patterns.")
+    impact = plan.get("expected_impact", "Improve knowledge readiness while preserving human control.")
+    workflow = plan.get("suggested_workflow", [])
+    workflow_html = ""
+    if workflow:
+        workflow_html = "<ol>" + "".join([f"<li>{item}</li>" for item in workflow]) + "</ol>"
+    st.markdown(f"""
+    <div class="agent-card">
+        <h3>Agent Planner</h3>
+        <p>The agent reviews the diagnosis and recommends the next best workflow step. It does not overwrite source files or publish knowledge without confirmation.</p>
+        <div class="recommendation-box">
+            <div class="recommendation-label">Recommended next action</div>
+            <div class="recommendation-action">{action}</div>
+            <p><b>Why:</b> {why}</p>
+            <p><b>Expected impact:</b> {impact}</p>
+            {workflow_html}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_ready_message(doc_count: int = 0):
+    st.markdown(f"""
+    <div class="ledger-ready">
+        Corrected document drafts are ready to download. {doc_count} corrected output(s) were prepared. Review the correction ledger before using them as formal knowledge assets.
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_run_highlight(title: str, body: str):
+    st.markdown(f"""
+    <div class="run-highlight">
+        <div class="run-highlight-title">Action required · {title}</div>
+        <div class="run-highlight-body">{body}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_download_highlight(title: str, body: str):
+    st.markdown(f"""
+    <div class="download-highlight">
+        <div class="download-highlight-title">Download area · {title}</div>
+        <div class="download-highlight-body">{body}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_next_step_banner(title: str, body: str):
+    st.markdown(f"""
+    <div class="next-step-banner">
+        <div class="next-step-title">{title}</div>
+        <div class="next-step-body">{body}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ============================================================
 # Streamlit UI
@@ -2375,6 +2957,7 @@ if selected_count:
 else:
     st.warning("No documents selected yet.")
 
+render_run_highlight("Run initial diagnosis", "Click the red button to scan uploaded documents and generate the first knowledge readiness dashboard.")
 if st.button("Run Knowledge Inventory Analysis", type="primary", use_container_width=True):
     extracted = []
     if zip_file:
@@ -2407,7 +2990,19 @@ if st.session_state.inventory is not None:
     else:
         dashboard_df = active_df
 
+    render_stepper("planner" if st.session_state.corrected_inventory is None else "export")
+    render_status_cards(dashboard_df)
     render_dashboard(dashboard_df)
+
+    st.markdown("""
+    <div class="cta-card">
+        <div class="cta-title">Ready for guided pre-correction?</div>
+        <div class="cta-body">
+            After reviewing the dashboard, start a guided correction round. The agent can suggest whether to correct the entire batch, a selected segment, a few documents, or one precise document.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
     render_agent_control_room(dashboard_df, ai_config)
 
@@ -2420,7 +3015,7 @@ if st.session_state.inventory is not None:
     </div>
     """, unsafe_allow_html=True)
 
-    if st.button("Open Guided Pre-correction Manually", type="secondary", use_container_width=True):
+    if st.button("Open Guided Pre-correction Manually", type="primary", use_container_width=True):
         st.session_state.show_precorrection = True
         st.session_state.correction_questions = None
 
@@ -2430,7 +3025,7 @@ if st.session_state.inventory is not None:
         render_precorrection_workbench(base_for_correction, ai_config)
 
         if st.session_state.correction_ledger is not None and not st.session_state.correction_ledger.empty:
-            st.markdown("### Correction Ledger")
+            render_section_header("Correction Ledger", "Every applied correction is recorded here for traceability.")
             st.dataframe(st.session_state.correction_ledger, use_container_width=True, hide_index=True)
 
             if st.session_state.corrected_docs_zip:
@@ -2448,7 +3043,7 @@ if st.session_state.inventory is not None:
         "Inventory table",
         "Process map",
         "Risk report",
-        "Download reports"
+        "Download outputs"
     ])
 
     with tab1:
